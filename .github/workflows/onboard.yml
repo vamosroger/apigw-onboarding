@@ -1,0 +1,298 @@
+name: onboard
+
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('Re-run — {0} ({1})', inputs.csv_file, inputs.cr_number) || format('Onboard — {0}', github.sha) }}
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'requests/*.csv'
+  workflow_dispatch:
+    inputs:
+      csv_file:
+        description: 'Path to request CSV to re-process (e.g. requests/pim_apigw_CHG1234567.csv)'
+        required: true
+        type: string
+      cr_number:
+        description: '*** APPROVED CR number required *** (e.g. CHG0012345 or CHG00123456) — run will fail without an approved CR'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write   # the run summary comments on the merged PR
+
+# Serialise runs so two merges cannot provision overlapping CSVs at once.
+concurrency:
+  group: onboard
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Validate CR number (manual dispatch only)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CR number format
+        # Read through env rather than interpolating into the script, so the
+        # input cannot break out of the string and run as shell.
+        env:
+          CR: ${{ inputs.cr_number }}
+        run: |
+          if [[ ! "$CR" =~ ^CHG[0-9]{7,8}$ ]]; then
+            echo "ERROR: An APPROVED CR number is required to run this workflow manually."
+            echo "Expected format: CHG plus 7 or 8 digits, e.g. CHG0012345 — got: '$CR'"
+            exit 1
+          fi
+          echo "APPROVED CR confirmed: $CR — proceeding with manual onboard run"
+
+  detect:
+    name: detect-new-requests
+    needs: gate
+    if: always() && (needs.gate.result == 'success' || needs.gate.result == 'skipped')
+    runs-on: ubuntu-latest
+    outputs:
+      files: ${{ steps.detect.outputs.files }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history: a push can contain several commits, so HEAD~1 is not
+          # always the right base.
+          fetch-depth: 0
+
+      - name: Detect new CSV files
+        id: detect
+        env:
+          CSV_FILE: ${{ inputs.csv_file }}
+          CR_INPUT: ${{ inputs.cr_number }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          # Request files must be named exactly pim_apigw_<CR>.csv, where <CR> is
+          # CHG followed by 7 or 8 digits. Anchored at both ends, so a nine-digit
+          # CR is rejected outright rather than matched as its first eight, and a
+          # file in a subdirectory cannot slip through.
+          NAME_PATTERN='^requests/pim_apigw_CHG[0-9]{7,8}\.csv$'
+
+          if [ -n "$CSV_FILE" ]; then
+            # Manual dispatch — use the specified file directly.
+            case "$CSV_FILE" in
+              requests/*.csv) ;;
+              *) echo "::error::csv_file must be a .csv under requests/ (got '$CSV_FILE')"; exit 1 ;;
+            esac
+            if [ ! -f "$CSV_FILE" ]; then
+              echo "::error::$CSV_FILE does not exist on this branch"; exit 1
+            fi
+            FILES=$(jq -R -c '[.]' <<< "$CSV_FILE")
+          else
+            # Push trigger — only files ADDED by this push. Modifying an existing
+            # CSV deliberately does nothing, because createapigw.py would
+            # re-create every row in it.
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              BEFORE=$(git rev-parse HEAD~1)
+            fi
+            FILES=$(git diff --name-only --diff-filter=A "$BEFORE" "$GITHUB_SHA" -- 'requests/*.csv' \
+              | sort -u \
+              | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          fi
+
+          # Reject any detected file that is not named to the convention.
+          # Failing loudly beats skipping it — a silently ignored request is one
+          # nobody chases up.
+          REJECTED=$(jq -r '.[]' <<< "$FILES" | grep -vE "$NAME_PATTERN" || true)
+          if [ -n "$REJECTED" ]; then
+            echo "::error::Request files must be named requests/pim_apigw_<CR>.csv, where <CR> is CHG plus 7 or 8 digits — e.g. requests/pim_apigw_CHG1234567.csv"
+            while IFS= read -r bad; do
+              [ -z "$bad" ] && continue
+              echo "::error file=$bad::'$bad' does not match pim_apigw_<CR>.csv — not accepted."
+            done <<< "$REJECTED"
+            {
+              echo "### Rejected — filename does not match \`pim_apigw_<CR>.csv\`"
+              echo
+              echo "Rename to \`requests/pim_apigw_CHG1234567.csv\` using the approved CR, and re-add the file."
+              echo
+              while IFS= read -r bad; do
+                [ -z "$bad" ] && continue
+                echo "- \`$bad\`"
+              done <<< "$REJECTED"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          # On a manual re-run the CR is given twice — in the filename and in the
+          # cr_number input. Disagreement means one of them is wrong.
+          if [ -n "$CSV_FILE" ]; then
+            FILE_CR=$(grep -oE 'CHG[0-9]{7,8}' <<< "$CSV_FILE" | head -n1)
+            if [ "$FILE_CR" != "$CR_INPUT" ]; then
+              echo "::error::cr_number '$CR_INPUT' does not match the CR in the filename '$FILE_CR'."
+              exit 1
+            fi
+          fi
+
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          echo "Detected: $FILES"
+
+      - name: Report when nothing was added
+        if: steps.detect.outputs.files == '[]'
+        run: |
+          echo "No newly added CSVs in this push — nothing to onboard." >> "$GITHUB_STEP_SUMMARY"
+          echo "Modifying an existing CSV does not trigger provisioning. Add a new file instead."
+
+  onboard:
+    name: onboard · ${{ matrix.file }}
+    needs: [gate, detect]
+    if: |
+      always() &&
+      (needs.gate.result == 'success' || needs.gate.result == 'skipped') &&
+      needs.detect.result == 'success' &&
+      needs.detect.outputs.files != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        file: ${{ fromJSON(needs.detect.outputs.files) }}
+      fail-fast: false
+
+    env:
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: ${{ secrets.APIGW_AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.APIGW_AWS_SECRET_ACCESS_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt
+
+      # createapigw.py builds https://{domain}/XWeb/... so a Domain pasted in as
+      # "https://example.com" would produce a doubled scheme and an integration
+      # pointing nowhere. Strip the scheme before anything reads the file.
+      - name: Normalise Domain column
+        env:
+          CSV: ${{ matrix.file }}
+        run: python scripts/normalize_requests.py --config-file "$CSV"
+
+      # createapigw.py skips bad rows mid-run, which means a typo is only found
+      # after earlier rows have already created real APIs. Fail the whole file first.
+      - name: Validate request CSV
+        env:
+          CSV: ${{ matrix.file }}
+        run: python scripts/validate_requests.py --config-file "$CSV"
+
+      # API Gateway allows duplicate names, so a row whose name already exists
+      # would create a second, indistinguishable API. Those rows are reported
+      # with the existing API's details and dropped from the file handed to
+      # createapigw.py. Add --fail-on-existing to stop the run instead.
+      - name: Skip API names that already exist
+        id: check
+        env:
+          CSV: ${{ matrix.file }}
+        run: |
+          python scripts/check_existing.py \
+            --config-file "$CSV" \
+            --write-remaining "$RUNNER_TEMP/to_create.csv"
+
+      - name: Run createapigw.py
+        id: run
+        # Every row already existed — there is nothing left to create.
+        if: steps.check.outputs.remaining != '0'
+        run: python scripts/createapigw.py --config-file "$RUNNER_TEMP/to_create.csv"
+
+      - name: Report that nothing needed creating
+        if: steps.check.outputs.remaining == '0'
+        run: |
+          echo "All requested APIs already exist — nothing was created."
+          echo "All requested APIs already exist — nothing was created." >> "$GITHUB_STEP_SUMMARY"
+
+      # Written even on a partial failure, so print regardless of the outcome above.
+      # Parsed with the csv module rather than cut/awk so a quoted field cannot
+      # shift the columns.
+      - name: Show results
+        if: always()
+        env:
+          CSV: ${{ matrix.file }}
+        run: |
+          python - <<'PY'
+          import csv, os
+          from pathlib import Path
+
+          results = Path("scripts/pim-apigw-list.csv")
+          source = os.environ["CSV"]
+
+          if not results.is_file():
+              print("No results file was produced — nothing was created.")
+              raise SystemExit(0)
+
+          with results.open(newline="", encoding="utf-8") as handle:
+              rows = list(csv.reader(handle))
+
+          header, data = rows[0], rows[1:]
+
+          print("=" * 60)
+          print(f"Created APIs from {source}")
+          print("=" * 60)
+          for row in data:
+              print(" | ".join(row))
+          print("=" * 60)
+          print(f"{len(data)} API(s) created.")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary and data:
+              with open(summary, "a", encoding="utf-8") as out:
+                  out.write(f"\n### Created APIs — `{source}`\n\n")
+                  out.write("| " + " | ".join(header) + " |\n")
+                  out.write("| " + " | ".join("---" for _ in header) + " |\n")
+                  for row in data:
+                      name, domain, url = (row + ["", "", ""])[:3]
+                      out.write(f"| {name} | {domain} | `{url}` |\n")
+          PY
+
+      - name: Post run summary
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          FILE: ${{ matrix.file }}
+          STATUS: ${{ steps.run.outcome }}
+          CR: ${{ inputs.cr_number }}
+        with:
+          script: |
+            const { FILE: file, STATUS: status, CR: cr } = process.env;
+            const emoji = status === 'success' ? '✅' : '❌';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const body = [
+              `## API Gateway Onboarding ${emoji} — \`${file}\``,
+              '',
+              `**Status:** ${status}`,
+              `**Run:** [#${context.runId}](${runUrl})`,
+              cr ? `**CR:** ${cr}` : '',
+              '',
+              status === 'success'
+                ? '- WebSocket APIs created with $connect, $disconnect and ping routes\n- Deployed to the `production` stage\n- WebSocket URLs are in the run log and the job summary'
+                : '- Check the Actions log for error details.\n- A failed row may have left a partially built API — review the console before re-running.',
+            ].filter(Boolean).join('\n');
+
+            core.summary.addRaw(body).write();
+
+            const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+            });
+
+            if (prs.data.length > 0) {
+              await github.rest.issues.createComment({
+                issue_number: prs.data[0].number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            }

@@ -1,0 +1,7 @@
+# Default owners for everything in this repo.
+# Replace with your actual GitHub team slugs before enabling branch protection.
+*                       @your-org/platform-team
+
+# Workflow and script changes need a closer look.
+/.github/workflows/     @your-org/platform-team
+/scripts/               @your-org/platform-team

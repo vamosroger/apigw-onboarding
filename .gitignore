@@ -1,0 +1,22 @@
+# Output of createapigw.py. CI publishes it as a run artifact instead, so local
+# runs don't produce a diff.
+scripts/pim-apigw-list.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local credentials
+.env
+.aws/
