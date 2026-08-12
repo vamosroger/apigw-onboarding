@@ -6,20 +6,27 @@ creates one WebSocket API Gateway.
 ## Format
 
 ```csv
-Name,Domain,Region,Environment,Pod
-pdpm1api-example,example.com,us-east-1,prod,1
+Domain,Region,Environment,Pod
+pim.acme.com,us-east-1,prod,1
+widgets.example.com,us-west-2,production,12
+dev.contoso.com,eu-west-1,dev,3
+shop.fabrikam.com,ap-southeast-2,development,4
 ```
+
+Those four rows would create `pdpm1api-pim`, `pdpm12api-widgets`,
+`dvpm3api-dev` and `dvpm4api-shop` — one row per accepted Environment spelling.
 
 `example.csv.template` holds this sample. It deliberately does not end in `.csv`
 so that committing it never triggers a provisioning run — copy it, don't rename
-it in place.
+it in place, and replace every row with your own.
+
+There is no `Name` column — the API name is generated. See below.
 
 | Column   | Meaning                                                              |
 | -------- | -------------------------------------------------------------------- |
-| `Name`   | API name. Generated for `prod` and `dev` rows — see below. |
 | `Domain` | Customer domain used to build the `$connect` / `$disconnect` integration URI. Host only — see below. |
-| `Region` | AWS region ID such as `us-east-1` — not a regional group code.        |
-| `Environment` | `prod`, `production`, `dev`, `development`, or anything else. Drives the `Name` rule. |
+| `Region` | AWS region ID such as `us-east-1`. Case-insensitive, checked against an allowlist — see below. |
+| `Environment` | `prod`, `production`, `dev` or `development`. Anything else is rejected — it has no `Name` rule. |
 | `Pod` | Pod number. **Digits only** — `1`, not `pod1`. |
 
 ## Adding a request
@@ -77,10 +84,10 @@ file manually, it re-creates every API in it, duplicates included.
 
 One file per batch, written once, left alone afterwards.
 
-## The Name is generated, not chosen
+## The Name is generated, not supplied
 
-For `prod`, `production`, `dev` and `development` rows the workflow overwrites
-whatever is in the `Name` column with:
+You do not write the API name. The workflow adds a `Name` column and fills it
+with:
 
 ```
 <prefix><pod>api-<first label of the domain>
@@ -91,17 +98,38 @@ whatever is in the `Name` column with:
 | `prod` | `pdpm` | `1` | `pim.acme.com` | `pdpm1api-pim` |
 | `production` | `pdpm` | `12` | `widgets.example.com` | `pdpm12api-widgets` |
 | `dev` | `dvpm` | `3` | `dev.contoso.com` | `dvpm3api-dev` |
-| `staging` | — | `4` | `staging.foo.com` | whatever you typed |
+| `development` | `dvpm` | `4` | `shop.fabrikam.com` | `dvpm4api-shop` |
 
 Only the first label of the domain is used, so the name never contains a dot.
 The result is lowercased.
 
-Any other Environment keeps the `Name` you supply. To bring one under the rule,
-add it to `ENVIRONMENT_PREFIXES` in `scripts/naming.py`.
+An Environment with no rule is **rejected** — with no `Name` column there is
+nothing to fall back on:
 
-Because the value is generated, leaving `Name` blank on a `prod` or `dev` row is
-fine — the workflow fills it in. If you do type one and it disagrees, it is
-replaced and the change is logged.
+```
+row 2: Environment 'staging' has no naming rule. Known: dev, development,
+       prod, production. Add it to ENVIRONMENT_PREFIXES in scripts/naming.py.
+```
+
+Two rows that would generate the same name are also rejected, which happens when
+they share an Environment, Pod and first domain label.
+
+## Region must be on the allowlist
+
+Casing does not matter — `US-EAST-1` and `us-east-1` are both accepted, and the
+workflow lowercases the column before anything reads it. AWS region IDs are
+lowercase, so this is a typo to fix rather than a different region.
+
+The value must be one of the 34 regions in `scripts/regions.py`. Anything else
+is rejected, including real AWS regions that are deliberately not on the list:
+
+```
+row 2: Region 'us-gov-west-1' is not an allowed region. 34 are allowed
+       — see ALLOWED_REGIONS in scripts/regions.py.
+```
+
+Group codes such as `use1` are rejected for the same reason — they are not
+region IDs. To allow another region, add it to that file.
 
 ## Domain is a host, not a URL
 
@@ -120,6 +148,6 @@ That fix applies to the runner's copy only; the CSV in git keeps what you wrote.
 python scripts/validate_requests.py --config-file requests/<your-file>.csv
 ```
 
-This catches empty fields, duplicate names within the file, and region group
-codes such as `use1` used where a region ID like `us-east-1` belongs. The
-workflow runs the same check before calling AWS.
+This catches empty fields, disallowed regions, non-numeric pods, unknown
+environments, and two rows that would generate the same name. The workflow runs
+the same check before calling AWS.

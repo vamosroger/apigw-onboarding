@@ -1,2 +1,5 @@
-Name,Domain,Region,Environment,Pod
-pdpm1api-example,example.com,us-east-1,prod,1
+Domain,Region,Environment,Pod
+pim.acme.com,us-east-1,prod,1
+widgets.example.com,us-west-2,production,12
+dev.contoso.com,eu-west-1,dev,3
+shop.fabrikam.com,ap-southeast-2,development,4

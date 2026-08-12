@@ -1,20 +1,12 @@
-import validate_requests
 from validate_requests import main, validate_rows
 
-HEADER = "Name,Domain,Region,Environment,Pod\n"
-GOOD_ROW = "pdpm1api-example,example.com,us-east-1,prod,1\n"
+HEADER = "Domain,Region,Environment,Pod\n"
+GOOD_ROW = "example.com,us-east-1,prod,1\n"
 
 
-def row(name="pim-example", domain="example.com", region="us-east-1",
-        environment="staging", pod="1"):
-    """A valid row.
-
-    Environment defaults to staging — which has no naming rule — so tests of
-    unrelated fields are not tripped up by the derived-Name check. Tests that
-    care about derivation set it explicitly.
-    """
+def row(domain="example.com", region="us-east-1", environment="prod", pod="1"):
+    """A valid row. There is no Name column — the name is generated."""
     return {
-        "Name": name,
         "Domain": domain,
         "Region": region,
         "Environment": environment,
@@ -23,12 +15,7 @@ def row(name="pim-example", domain="example.com", region="us-east-1",
 
 
 def test_valid_rows_produce_no_errors():
-    assert validate_rows([row(), row(name="pim-other")]) == []
-
-
-def test_missing_name_is_reported():
-    errors = validate_rows([row(name="")])
-    assert any("Name is empty" in error for error in errors)
+    assert validate_rows([row(), row(domain="other.com")]) == []
 
 
 def test_missing_domain_is_reported():
@@ -62,65 +49,67 @@ def test_a_digits_only_pod_is_accepted():
     assert validate_rows([row(pod="03")]) == []
 
 
-def test_any_environment_is_accepted_by_default():
-    # ALLOWED_ENVIRONMENTS is empty, so presence is all that is checked.
-    assert validate_rows([row(environment="sandbox-eu")]) == []
+def test_an_environment_without_a_naming_rule_is_rejected():
+    # With no Name column there is nothing to fall back on, so this must fail.
+    errors = validate_rows([row(environment="staging")])
+    assert any("has no naming rule" in error for error in errors)
+    assert any("naming.py" in error for error in errors)
 
 
-def test_environment_is_restricted_when_a_list_is_configured(monkeypatch):
-    monkeypatch.setattr(validate_requests, "ALLOWED_ENVIRONMENTS", ["dev", "prod"])
-    assert validate_rows([row(environment="prod", name="pdpm1api-example")]) == []
-    errors = validate_rows([row(environment="sandbox")])
-    assert any("is not one of: dev, prod" in error for error in errors)
-
-
-def test_a_prod_row_must_use_the_derived_name():
-    errors = validate_rows([row(environment="prod", name="pim-example")])
-    assert any("should be 'pdpm1api-example'" in error for error in errors)
-
-
-def test_a_prod_row_with_the_derived_name_passes():
-    assert validate_rows([row(environment="prod", name="pdpm1api-example")]) == []
-
-
-def test_a_dev_row_must_use_the_dvpm_name():
-    errors = validate_rows([row(environment="dev", name="pdpm1api-example")])
-    assert any("should be 'dvpm1api-example'" in error for error in errors)
-
-
-def test_the_derived_name_uses_the_first_domain_label():
-    assert validate_rows(
-        [row(environment="prod", domain="pim.example.com", name="pdpm1api-pim")]
-    ) == []
-
-
-def test_an_unlisted_environment_keeps_its_supplied_name():
-    assert validate_rows([row(environment="staging", name="anything-goes")]) == []
-
-
-def test_a_bad_pod_does_not_also_raise_a_name_error():
-    # Derivation fails closed, so the row gets one clear error, not two.
-    errors = validate_rows([row(environment="prod", pod="pod1")])
-    assert any("must be digits only" in error for error in errors)
-    assert not any("should be" in error for error in errors)
+def test_the_listed_environments_are_accepted():
+    for environment in ["prod", "production", "dev", "development", "PROD"]:
+        assert validate_rows([row(environment=environment)]) == [], environment
 
 
 def test_regional_group_code_is_rejected():
-    # 'use1' is a group code, not a region ID — the exact mistake the script's
-    # docstring warns about.
+    # 'use1' is a group code, not a region ID.
     errors = validate_rows([row(region="use1")])
-    assert any("not a valid AWS region ID" in error for error in errors)
+    assert any("is not an allowed region" in error for error in errors)
 
 
-def test_duplicate_names_are_reported():
-    errors = validate_rows([row(), row()])
-    assert any("duplicate Name" in error for error in errors)
+def test_a_region_outside_the_allowed_list_is_rejected():
+    errors = validate_rows([row(region="us-gov-west-1")])
+    assert any("is not an allowed region" in error for error in errors)
+    assert any("regions.py" in error for error in errors)
+
+
+def test_region_is_accepted_whatever_its_casing():
+    # validate runs before and after normalize, so both must pass.
+    assert validate_rows([row(region="US-EAST-1")]) == []
+    assert validate_rows([row(region="  Us-East-1  ")]) == []
+
+
+def test_rows_generating_the_same_name_are_reported():
+    # Same environment, pod and first domain label -> same generated name.
+    errors = validate_rows([row(domain="pim.a.com"), row(domain="pim.b.com")])
+    assert any("would generate 'pdpm1api-pim'" in error for error in errors)
+
+
+def test_different_pods_do_not_collide():
+    assert validate_rows([row(pod="1"), row(pod="2")]) == []
 
 
 def test_row_numbers_account_for_the_header():
-    errors = validate_rows([row(name=""), row(domain="")])
+    errors = validate_rows([row(domain=""), row(region="")])
     assert any(error.startswith("row 2:") for error in errors)
     assert any(error.startswith("row 3:") for error in errors)
+
+
+def test_a_name_column_added_by_normalize_must_agree():
+    good = row()
+    good["Name"] = "pdpm1api-example"
+    assert validate_rows([good]) == []
+
+    bad = row()
+    bad["Name"] = "hand-typed"
+    errors = validate_rows([bad])
+    assert any("should be 'pdpm1api-example'" in error for error in errors)
+
+
+def test_a_raw_csv_without_a_name_column_is_not_penalised():
+    # validate_requests.py is also run by hand before opening a PR.
+    assert "Name" not in row()
+    assert validate_rows([row()]) == []
 
 
 def test_main_accepts_a_good_csv(tmp_path):
@@ -129,7 +118,7 @@ def test_main_accepts_a_good_csv(tmp_path):
     assert main(["--config-file", str(csv_file)]) == 0
 
 
-def test_main_rejects_a_file_missing_the_new_columns(tmp_path):
+def test_main_rejects_a_file_that_still_has_the_old_header(tmp_path):
     csv_file = tmp_path / "requests.csv"
     csv_file.write_text("Name,Domain,Region\npim-example,example.com,us-east-1\n", encoding="utf-8")
     assert main(["--config-file", str(csv_file)]) == 1
@@ -137,7 +126,7 @@ def test_main_rejects_a_file_missing_the_new_columns(tmp_path):
 
 def test_main_rejects_a_missing_column(tmp_path):
     csv_file = tmp_path / "requests.csv"
-    csv_file.write_text("Name,Domain\npim-example,example.com\n", encoding="utf-8")
+    csv_file.write_text("Domain,Region\nexample.com,us-east-1\n", encoding="utf-8")
     assert main(["--config-file", str(csv_file)]) == 1
 
 

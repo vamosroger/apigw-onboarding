@@ -8,11 +8,12 @@ Provisions PIM WebSocket API Gateways from CSV request files.
 .github/
   workflows/
     onboard.yml         provisions APIs from newly added request CSVs
-requests/               request CSVs (Name, Domain, Region, Environment, Pod)
+requests/               request CSVs (Domain, Region, Environment, Pod)
 scripts/
   createapigw.py        creates the WebSocket APIs via boto3
-  naming.py             the API naming rule, shared by the two scripts below
-  normalize_requests.py cleans the Domain column and generates the Name
+  naming.py             the API naming rule, shared by the scripts below
+  regions.py            the allowed AWS regions, shared the same way
+  normalize_requests.py cleans Domain and Region, adds the generated Name
   check_existing.py     skips rows whose API name already exists in AWS
   validate_requests.py  checks a request CSV before anything reaches AWS
 tests/                  pytest suite for validate_requests

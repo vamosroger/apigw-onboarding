@@ -33,17 +33,23 @@ from pathlib import Path
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
+from regions import normalize_region
+
 
 def log(message):
     print(message, flush=True)
 
 
 def rows_by_region(rows):
-    """Group (name, domain) by region, skipping rows with either field blank."""
+    """Group (name, domain) by region, skipping rows with either field blank.
+
+    Region is lowercased, both because boto3 needs the real region ID and so
+    two spellings of the same region are not checked twice.
+    """
     grouped = defaultdict(list)
     for row in rows:
         name = (row.get("Name") or "").strip()
-        region = (row.get("Region") or "").strip()
+        region = normalize_region(row.get("Region"))
         domain = (row.get("Domain") or "").strip()
         if name and region:
             grouped[region].append((name, domain))
@@ -111,7 +117,7 @@ def partition_rows(rows, collisions):
     taken = {(hit["region"], hit["name"]) for hit in collisions}
     to_create, skipped = [], []
     for row in rows:
-        key = ((row.get("Region") or "").strip(), (row.get("Name") or "").strip())
+        key = (normalize_region(row.get("Region")), (row.get("Name") or "").strip())
         (skipped if key in taken else to_create).append(row)
     return to_create, skipped
 

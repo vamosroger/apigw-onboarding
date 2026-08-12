@@ -46,19 +46,20 @@ def test_a_domain_containing_https_in_its_name_is_not_mangled():
     assert normalize_domain("https-test.example.com") == "https-test.example.com"
 
 
-def test_normalize_rows_reports_only_changed_rows():
+def test_only_changed_values_are_reported():
     rows = [
-        {"Name": "a", "Domain": "https://a.com", "Region": "us-east-1"},
-        {"Name": "b", "Domain": "b.com", "Region": "us-east-1"},
+        {"Domain": "https://a.com", "Region": "us-east-1", "Environment": "staging", "Pod": "1"},
+        {"Domain": "b.com", "Region": "us-east-1", "Environment": "staging", "Pod": "1"},
     ]
     changes = normalize_rows(rows)
+    # staging has no naming rule, so no Name is generated for either row.
     assert changes == [(2, "Domain", "https://a.com", "a.com")]
     assert rows[0]["Domain"] == "a.com"
     assert rows[1]["Domain"] == "b.com"
 
 
 def test_prod_name_is_generated():
-    rows = [{"Name": "", "Domain": "example.com", "Region": "us-east-1",
+    rows = [{"Domain": "example.com", "Region": "us-east-1",
              "Environment": "prod", "Pod": "1"}]
     changes = normalize_rows(rows)
     assert rows[0]["Name"] == "pdpm1api-example"
@@ -66,61 +67,81 @@ def test_prod_name_is_generated():
 
 
 def test_dev_name_is_generated():
-    rows = [{"Name": "", "Domain": "example.com", "Region": "us-east-1",
+    rows = [{"Domain": "example.com", "Region": "us-east-1",
              "Environment": "dev", "Pod": "2"}]
     normalize_rows(rows)
     assert rows[0]["Name"] == "dvpm2api-example"
 
 
-def test_a_hand_typed_name_is_overwritten():
-    rows = [{"Name": "whatever-they-typed", "Domain": "example.com", "Region": "us-east-1",
+def test_a_name_column_is_added_to_rows_that_lack_one():
+    rows = [{"Domain": "example.com", "Region": "us-east-1",
              "Environment": "prod", "Pod": "1"}]
     changes = normalize_rows(rows)
     assert rows[0]["Name"] == "pdpm1api-example"
-    assert (2, "Name", "whatever-they-typed", "pdpm1api-example") in changes
+    assert (2, "Name", "", "pdpm1api-example") in changes
 
 
 def test_the_name_is_derived_from_the_cleaned_domain():
     # Domain is normalised first, so the scheme never reaches the name rule.
-    rows = [{"Name": "", "Domain": "https://pim.example.com/", "Region": "us-east-1",
+    rows = [{"Domain": "https://pim.example.com/", "Region": "us-east-1",
              "Environment": "prod", "Pod": "1"}]
     normalize_rows(rows)
     assert rows[0]["Domain"] == "pim.example.com"
     assert rows[0]["Name"] == "pdpm1api-pim"
 
 
-def test_an_unlisted_environment_keeps_its_supplied_name():
-    rows = [{"Name": "keep-me", "Domain": "example.com", "Region": "us-east-1",
+def test_an_unlisted_environment_gets_an_empty_name():
+    # validate_requests.py rejects the row; normalising must not invent a name.
+    rows = [{"Domain": "example.com", "Region": "us-east-1",
              "Environment": "staging", "Pod": "1"}]
     assert normalize_rows(rows) == []
-    assert rows[0]["Name"] == "keep-me"
+    assert rows[0]["Name"] == ""
 
 
-def test_an_underivable_prod_row_keeps_its_name_for_the_validator_to_catch():
-    rows = [{"Name": "keep-me", "Domain": "example.com", "Region": "us-east-1",
+def test_an_underivable_prod_row_gets_an_empty_name():
+    rows = [{"Domain": "example.com", "Region": "us-east-1",
              "Environment": "prod", "Pod": ""}]
     assert normalize_rows(rows) == []
-    assert rows[0]["Name"] == "keep-me"
+    assert rows[0]["Name"] == ""
 
 
-def test_main_rewrites_the_file(tmp_path):
+def test_region_is_lowercased():
+    rows = [{"Domain": "example.com", "Region": "US-EAST-1",
+             "Environment": "prod", "Pod": "1"}]
+    changes = normalize_rows(rows)
+    assert rows[0]["Region"] == "us-east-1"
+    assert (2, "Region", "US-EAST-1", "us-east-1") in changes
+
+
+def test_an_already_lowercase_region_is_left_alone():
+    rows = [{"Domain": "example.com", "Region": "us-east-1",
+             "Environment": "prod", "Pod": "1"}]
+    changes = normalize_rows(rows)
+    assert not any(field == "Region" for _, field, _, _ in changes)
+
+
+def test_main_adds_the_name_column(tmp_path):
+    # A request CSV as authored: no Name column at all.
     csv_file = tmp_path / "requests.csv"
     csv_file.write_text(
-        "Name,Domain,Region\npim-example,https://example.com/,us-east-1\n", encoding="utf-8"
+        "Domain,Region,Environment,Pod\nhttps://example.com/,us-east-1,prod,1\n",
+        encoding="utf-8",
     )
     assert main(["--config-file", str(csv_file)]) == 0
 
     with csv_file.open(newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames[0] == "Name"   # prepended
+        rows = list(reader)
+    assert rows[0]["Name"] == "pdpm1api-example"
     assert rows[0]["Domain"] == "example.com"
-    assert rows[0]["Name"] == "pim-example"
     assert rows[0]["Region"] == "us-east-1"
 
 
 def test_main_preserves_extra_columns(tmp_path):
     csv_file = tmp_path / "requests.csv"
     csv_file.write_text(
-        "Name,Domain,Region,CR\npim-example,https://example.com,us-east-1,CHG0012345\n",
+        "Domain,Region,Environment,Pod,CR\nhttps://example.com,us-east-1,prod,1,CHG0012345\n",
         encoding="utf-8",
     )
     assert main(["--config-file", str(csv_file)]) == 0
@@ -129,20 +150,25 @@ def test_main_preserves_extra_columns(tmp_path):
         rows = list(csv.DictReader(handle))
     assert rows[0]["CR"] == "CHG0012345"
     assert rows[0]["Domain"] == "example.com"
+    assert rows[0]["Name"] == "pdpm1api-example"
 
 
-def test_main_leaves_a_clean_file_untouched(tmp_path):
+def test_main_is_idempotent(tmp_path):
+    # Running twice must not change anything the second time.
     csv_file = tmp_path / "requests.csv"
-    original = "Name,Domain,Region\npim-example,example.com,us-east-1\n"
-    csv_file.write_text(original, encoding="utf-8")
+    csv_file.write_text(
+        "Domain,Region,Environment,Pod\nexample.com,us-east-1,prod,1\n", encoding="utf-8"
+    )
     assert main(["--config-file", str(csv_file)]) == 0
-    assert csv_file.read_text(encoding="utf-8") == original
+    once = csv_file.read_text(encoding="utf-8")
+    assert main(["--config-file", str(csv_file)]) == 0
+    assert csv_file.read_text(encoding="utf-8") == once
 
 
 def test_main_tolerates_a_missing_domain_column(tmp_path):
     # validate_requests.py owns that error; this must not crash first.
     csv_file = tmp_path / "requests.csv"
-    csv_file.write_text("Name,Region\npim-example,us-east-1\n", encoding="utf-8")
+    csv_file.write_text("Region,Environment,Pod\nus-east-1,prod,1\n", encoding="utf-8")
     assert main(["--config-file", str(csv_file)]) == 0
 
 

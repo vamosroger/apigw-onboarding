@@ -36,6 +36,15 @@ def test_rows_missing_a_name_or_region_are_skipped():
     assert rows_by_region(rows) == {"us-east-1": [("c", "c.com")]}
 
 
+def test_region_grouping_is_case_insensitive():
+    rows = [
+        {"Name": "a", "Domain": "a.com", "Region": "US-EAST-1"},
+        {"Name": "b", "Domain": "b.com", "Region": "us-east-1"},
+    ]
+    # One AWS call, not two, and the key is the real region ID.
+    assert rows_by_region(rows) == {"us-east-1": [("a", "a.com"), ("b", "b.com")]}
+
+
 def test_no_collision_when_the_name_is_new():
     requested = {"us-east-1": [("pdpm1api-pim", "pim.acme.com")]}
     existing = {"us-east-1": {"something-else": [api(name="something-else")]}}
