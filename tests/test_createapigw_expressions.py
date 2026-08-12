@@ -1,13 +1,16 @@
 """Guards on the API Gateway selection expressions.
 
-These constants were "corrected" once during the PowerShell port by removing a
-backslash that looked like an escaping artefact. It was not — API Gateway needs
-it — and CreateIntegration failed with:
+Escaping here is inconsistent between operations, and each variant has cost a
+failed run and an orphaned API. Both rules are confirmed against live AWS:
 
-    Unexpected variable in selection expression: $default
+    CreateIntegration  TemplateSelectionExpression      needs "\\$default"
+        unescaped ->  Unexpected variable in selection expression: $default
 
-after creating the API but before finishing it, leaving an orphan behind. These
-tests exist so that never happens silently again.
+    CreateRoute        RouteResponseSelectionExpression needs "$default"
+        escaped   ->  Currently, only $default is supported as a route
+                      response selection expression.
+
+Do not "tidy" these into agreeing with each other. They do not agree.
 """
 
 from createapigw import (
@@ -21,12 +24,18 @@ from createapigw import (
 
 
 def test_template_selection_expression_escapes_the_dollar():
-    # The literal string sent to AWS must be \$default, not $default.
+    # CreateIntegration: the literal sent to AWS must be \$default.
     assert TEMPLATE_SELECTION_EXPRESSION == r"\$default"
 
 
-def test_route_response_selection_expression_escapes_the_dollar():
-    assert ROUTE_RESPONSE_SELECTION_EXPRESSION == r"\$default"
+def test_route_response_selection_expression_does_not_escape_the_dollar():
+    # CreateRoute: the opposite. AWS rejects \$default here.
+    assert ROUTE_RESPONSE_SELECTION_EXPRESSION == "$default"
+
+
+def test_the_two_selection_expressions_deliberately_disagree():
+    # Guards against someone making them consistent. One run each proved both.
+    assert TEMPLATE_SELECTION_EXPRESSION != ROUTE_RESPONSE_SELECTION_EXPRESSION
 
 
 def test_genuine_variable_expressions_are_not_escaped():

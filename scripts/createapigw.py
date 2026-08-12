@@ -44,9 +44,13 @@ ROUTE_KEYS = ["$connect", "$disconnect", "ping"]
 API_STAGE = "production"
 ROUTE_SELECTION_EXPRESSION = "$request.body.type"
 
-# Same escaping rule as TEMPLATE_SELECTION_EXPRESSION below — this is a
-# selection expression, so the reserved key must be written "\$default".
-ROUTE_RESPONSE_SELECTION_EXPRESSION = "\\$default"
+# NOT escaped, unlike TEMPLATE_SELECTION_EXPRESSION below. CreateRoute rejects
+# "\$default" with:
+#     Currently, only $default is supported as a route response selection
+#     expression.
+# API Gateway accepts only the plain reserved word here — it is a fixed marker
+# meaning "this route handles two-way communication", not a parsed expression.
+ROUTE_RESPONSE_SELECTION_EXPRESSION = "$default"
 
 # The backslash is required by API Gateway, not a leftover from PowerShell. In a
 # selection expression '$' introduces a variable, so an unescaped "$default" is
