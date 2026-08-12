@@ -97,20 +97,42 @@ def test_the_role_with_the_managed_policy_wins():
     assert APIGW_CLOUDWATCH_POLICY in reason
 
 
-def test_two_roles_with_the_policy_is_refused():
-    # This grants a role account-wide; guessing is worse than doing nothing.
+def test_the_first_of_several_policy_roles_is_taken():
     arn, reason = choose_role([
         ("LogsA", "arn:aws:iam::1:role/LogsA", True),
         ("LogsB", "arn:aws:iam::1:role/LogsB", True),
     ])
-    assert arn is None
-    assert "--role-arn" in reason
+    assert arn == "arn:aws:iam::1:role/LogsA"
+    assert "first of 2" in reason
+    assert "LogsB" in reason           # the one passed over is named
+    assert "--role-arn" in reason      # and how to override is stated
 
 
-def test_two_roles_without_the_policy_is_refused():
+def test_the_first_of_several_plain_roles_is_taken():
     arn, reason = choose_role([
         ("A", "arn:aws:iam::1:role/A", False),
         ("B", "arn:aws:iam::1:role/B", False),
     ])
-    assert arn is None
-    assert "--role-arn" in reason
+    assert arn == "arn:aws:iam::1:role/A"
+    assert "first of 2" in reason
+
+
+def test_the_choice_does_not_depend_on_the_order_iam_returned():
+    # list_roles gives no ordering guarantee, and this setting is account-wide,
+    # so the same roles must always yield the same pick.
+    roles = [
+        ("Zebra", "arn:aws:iam::1:role/Zebra", True),
+        ("Alpha", "arn:aws:iam::1:role/Alpha", True),
+        ("Middle", "arn:aws:iam::1:role/Middle", True),
+    ]
+    first, _ = choose_role(roles)
+    reversed_first, _ = choose_role(list(reversed(roles)))
+    assert first == reversed_first == "arn:aws:iam::1:role/Alpha"
+
+
+def test_a_policy_role_still_beats_a_plain_one_that_sorts_earlier():
+    arn, _ = choose_role([
+        ("Aaa-no-policy", "arn:aws:iam::1:role/Aaa-no-policy", False),
+        ("Zzz-with-policy", "arn:aws:iam::1:role/Zzz-with-policy", True),
+    ])
+    assert arn == "arn:aws:iam::1:role/Zzz-with-policy"

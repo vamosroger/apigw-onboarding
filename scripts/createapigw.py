@@ -655,26 +655,34 @@ def trusts_apigateway(assume_role_policy):
 def choose_role(candidates):
     """Pick the role to use from [(name, arn, has_policy), ...].
 
-    A role carrying the AWS managed CloudWatch policy is preferred. Ambiguity
-    is refused rather than guessed at — this grants a role to the whole
-    account, so picking the wrong one is worse than doing nothing.
-    Returns (arn, reason) with arn None when no safe choice exists.
+    Roles carrying the AWS managed CloudWatch policy are preferred; among
+    equals the first is taken. Candidates are sorted by name first, because IAM
+    does not promise a stable order from list_roles and this setting applies to
+    every API in the account — the same input must always pick the same role.
+
+    Returns (arn, reason). arn is None only when there are no candidates at
+    all; pass --role-arn to override the choice.
     """
     if not candidates:
         return None, "no IAM role trusts apigateway.amazonaws.com"
 
-    with_policy = [c for c in candidates if c[2]]
-    if len(with_policy) == 1:
-        return with_policy[0][1], f"{with_policy[0][0]} has {APIGW_CLOUDWATCH_POLICY}"
-    if len(with_policy) > 1:
-        names = ", ".join(c[0] for c in with_policy)
-        return None, f"several roles carry the CloudWatch policy ({names}) — pass --role-arn"
+    ordered = sorted(candidates, key=lambda candidate: candidate[0])
+    with_policy = [candidate for candidate in ordered if candidate[2]]
+    pool = with_policy or ordered
 
-    if len(candidates) == 1:
-        return candidates[0][1], f"{candidates[0][0]} is the only role trusting API Gateway"
-
-    names = ", ".join(c[0] for c in candidates)
-    return None, f"several roles trust API Gateway ({names}) — pass --role-arn"
+    name, arn, has_policy = pool[0]
+    if len(pool) > 1:
+        others = ", ".join(candidate[0] for candidate in pool[1:])
+        qualifier = "carrying the CloudWatch policy" if has_policy else "trusting API Gateway"
+        reason = (
+            f"{name} is the first of {len(pool)} roles {qualifier} "
+            f"(passed over: {others}) — pass --role-arn to choose another"
+        )
+    elif has_policy:
+        reason = f"{name} has {APIGW_CLOUDWATCH_POLICY}"
+    else:
+        reason = f"{name} is the only role trusting API Gateway"
+    return arn, reason
 
 
 def find_apigateway_roles(iam):
