@@ -220,8 +220,18 @@ APIGW_CLOUDWATCH_POLICY = (
 # SHARED HELPERS
 # ============================================================
 
-def log(message):
-    """Write a message to stdout, flushed so output interleaves correctly."""
+# Set by `create --quiet`. Progress chatter is suppressed; errors are not.
+_QUIET = False
+
+
+def log(message, force=False):
+    """Write a message to stdout, flushed so output interleaves correctly.
+
+    Suppressed under --quiet unless force is set. Anything the reader needs in
+    order to act — errors, skips, the closing tally — passes force=True.
+    """
+    if _QUIET and not force:
+        return
     print(message, flush=True)
 
 
@@ -871,7 +881,11 @@ def provision_api(api_name, api_domain, api_region):
 
 
 def print_results(created):
-    """Print the created APIs as a table. Nothing is written to disk."""
+    """Print the created APIs as a table. Nothing is written to disk.
+
+    Suppressed by --quiet — the `report` subcommand prints the same information
+    from live AWS state at the end of the job.
+    """
     if not created:
         log("\nNo APIs were created.")
         return
@@ -887,16 +901,52 @@ def print_results(created):
 
 
 def cmd_create(args):
+    global _QUIET
+    _QUIET = args.quiet
+
     config_path = Path(args.config_file)
     if not config_path.is_file():
-        log(f"ERROR: Configuration file not found: {config_path}")
+        log(f"ERROR: Configuration file not found: {config_path}", force=True)
         return 1
 
     _, rows = read_rows(config_path)
 
     if not rows:
-        log(f"ERROR: No rows found in {config_path}")
+        log(f"ERROR: No rows found in {config_path}", force=True)
         return 1
+
+    # API Gateway permits duplicate names, so without this a re-run creates a
+    # second, indistinguishable API for every row. One get_apis call per
+    # region, before anything is created.
+    requested = rows_by_region(rows)
+    existing_by_region = {}
+    for region in sorted(requested):
+        try:
+            existing_by_region[region] = fetch_apis(region)
+        except (ClientError, BotoCoreError) as error:
+            # A check that cannot run must not silently look like a pass.
+            log(f"WARNING: could not list APIs in {region}: {error}", force=True)
+            log(f"         Rows in {region} were NOT checked and may duplicate.", force=True)
+            existing_by_region[region] = {}
+
+    collisions = find_collisions(requested, existing_by_region)
+    rows, skipped = partition_rows(rows, collisions)
+
+    if collisions:
+        for hit in collisions:
+            log(
+                f"SKIPPED: '{hit['name']}' already exists in {hit['region']} "
+                f"-> {describe(hit['existing'][0])}",
+                force=True,
+            )
+
+    # Names, not just the count, so `report` can label these rows as
+    # pre-existing rather than newly created.
+    set_output("skipped_names", ",".join((row.get("Name") or "").strip() for row in skipped))
+
+    if not rows:
+        log("Nothing to create — every requested API already exists.", force=True)
+        return 0
 
     created = []
     failed = 0
@@ -907,13 +957,16 @@ def cmd_create(args):
         api_region = normalize_region(row.get("Region"))
 
         if not api_name:
-            log(f"ERROR: Row missing Name in {config_path}. Skipping.")
+            log(f"ERROR: Row missing Name in {config_path}. Skipping.", force=True)
             failed += 1
             continue
 
         # Skip the row if no Region was supplied, rather than defaulting to null
         if not api_region:
-            log(f"ERROR: No Region specified for '{api_name}' in {config_path}. Skipping.")
+            log(
+                f"ERROR: No Region specified for '{api_name}' in {config_path}. Skipping.",
+                force=True,
+            )
             failed += 1
             continue
 
@@ -925,11 +978,14 @@ def cmd_create(args):
         except (ClientError, BotoCoreError, RuntimeError) as error:
             # A failure here may leave a partially built API in AWS - the
             # `report` subcommand lists what actually exists afterwards.
-            log(f"ERROR: Failed to create '{api_name}' in {api_region}: {error}")
+            log(f"ERROR: Failed to create '{api_name}' in {api_region}: {error}", force=True)
             failed += 1
 
     print_results(created)
-    log(f"\nDone. {len(created)} succeeded, {failed} failed.")
+    log(
+        f"\nDone. {len(created)} created, {len(skipped)} already existed, {failed} failed.",
+        force=True,
+    )
 
     return 1 if failed else 0
 
@@ -1092,8 +1148,15 @@ def main(argv=None):
     )
     cloudwatch.set_defaults(func=cmd_cloudwatch)
 
-    create = subcommands.add_parser("create", help="create the WebSocket APIs")
+    create = subcommands.add_parser(
+        "create", help="create the WebSocket APIs, skipping names that already exist"
+    )
     create.add_argument("--config-file", required=True, help="Path to the CSV to provision")
+    create.add_argument(
+        "--quiet",
+        action="store_true",
+        help="suppress per-API progress. Errors, skips and the tally still print",
+    )
     create.set_defaults(func=cmd_create)
 
     report = subcommands.add_parser("report", help="print the final state of every row")

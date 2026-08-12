@@ -197,18 +197,20 @@ jobs:
           CSV: ${{ matrix.file }}
         run: python scripts/createapigw.py cloudwatch --config-file "$CSV"
 
+      # create skips any name that already exists in its region, so a re-run
+      # cannot produce duplicates. --quiet drops the per-route progress; errors,
+      # skips and the closing tally still print, and the full picture is in the
+      # job summary below.
       - name: Run createapigw.py
         id: run
         env:
           CSV: ${{ matrix.file }}
-        run: python scripts/createapigw.py create --config-file "$CSV"
+        run: python scripts/createapigw.py create --config-file "$CSV" --quiet
 
       # The job summary. One table covering every row, read from live AWS state,
       # so a half-built API from a failed row still shows up and a row that
-      # produced nothing is marked MISSING.
-      #
-      # --skipped is empty because nothing skips rows any more. Every row that
-      # exists in AWS afterwards is reported as 'created'.
+      # produced nothing is marked MISSING. --skipped comes from the create
+      # step, so pre-existing APIs are labelled 'existing' rather than 'created'.
       #
       # Only one other step contributes to the summary — 'Normalise Domain
       # column', which notes any input it rewrote. The rest only log.
@@ -216,7 +218,11 @@ jobs:
         if: always()
         env:
           CSV: ${{ matrix.file }}
-        run: python scripts/createapigw.py report --config-file "$CSV"
+          SKIPPED: ${{ steps.run.outputs.skipped_names }}
+        run: |
+          python scripts/createapigw.py report \
+            --config-file "$CSV" \
+            --skipped "$SKIPPED"
 
       # Comments the outcome on the merged PR. The job summary itself is written
       # by the step above; this only mirrors the headline to the PR.
