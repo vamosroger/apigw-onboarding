@@ -178,7 +178,7 @@ jobs:
       - name: Normalise Domain column
         env:
           CSV: ${{ matrix.file }}
-        run: python scripts/normalize_requests.py --config-file "$CSV"
+        run: python scripts/createapigw.py normalize --config-file "$CSV"
 
       # createapigw.py skips bad rows mid-run, which means a typo is only found
       # after earlier rows have already created real APIs. Fail the whole file first.
@@ -187,57 +187,68 @@ jobs:
           CSV: ${{ matrix.file }}
         run: python scripts/validate_requests.py --config-file "$CSV"
 
-      # API Gateway allows duplicate names, so a row whose name already exists
-      # would create a second, indistinguishable API. Those rows are reported
-      # with the existing API's details and dropped from the file handed to
-      # createapigw.py. Add --fail-on-existing to stop the run instead.
-      - name: Skip API names that already exist
-        id: check
+      # API Gateway delivers execution logs through an account-level IAM role,
+      # set once per account per region. Without it the stage's LoggingLevel is
+      # recorded but nothing reaches CloudWatch. This reads the current setting
+      # and, when it is unset, finds a role that API Gateway can assume and
+      # configures it. Add --require to fail the run when that is not possible.
+      - name: Check IAM role for cloudwatch
         env:
           CSV: ${{ matrix.file }}
-        run: |
-          python scripts/check_existing.py \
-            --config-file "$CSV" \
-            --write-remaining "$RUNNER_TEMP/to_create.csv"
+        run: python scripts/createapigw.py cloudwatch --config-file "$CSV"
 
       - name: Run createapigw.py
         id: run
-        # Every row already existed — there is nothing left to create.
-        if: steps.check.outputs.remaining != '0'
-        run: python scripts/createapigw.py --config-file "$RUNNER_TEMP/to_create.csv"
+        env:
+          CSV: ${{ matrix.file }}
+        run: python scripts/createapigw.py create --config-file "$CSV"
 
-      - name: Report that nothing needed creating
-        if: steps.check.outputs.remaining == '0'
-        run: |
-          echo "All requested APIs already exist — nothing was created."
-          echo "All requested APIs already exist — nothing was created." >> "$GITHUB_STEP_SUMMARY"
+      # The job summary. One table covering every row, read from live AWS state,
+      # so a half-built API from a failed row still shows up and a row that
+      # produced nothing is marked MISSING.
+      #
+      # --skipped is empty because nothing skips rows any more. Every row that
+      # exists in AWS afterwards is reported as 'created'.
+      #
+      # Only one other step contributes to the summary — 'Normalise Domain
+      # column', which notes any input it rewrote. The rest only log.
+      - name: Job summary
+        if: always()
+        env:
+          CSV: ${{ matrix.file }}
+        run: python scripts/createapigw.py report --config-file "$CSV"
 
-      - name: Post run summary
+      # Comments the outcome on the merged PR. The job summary itself is written
+      # by the step above; this only mirrors the headline to the PR.
+      - name: Comment on the PR
         if: always()
         uses: actions/github-script@v7
         env:
           FILE: ${{ matrix.file }}
+          # 'skipped' when every row already existed — a good outcome, not a failure.
           STATUS: ${{ steps.run.outcome }}
           CR: ${{ inputs.cr_number }}
         with:
           script: |
             const { FILE: file, STATUS: status, CR: cr } = process.env;
-            const emoji = status === 'success' ? '✅' : '❌';
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            const outcome = {
+              success: ['✅', 'APIs created', '- WebSocket APIs created with $connect, $disconnect and ping routes\n- Deployed to the `production` stage\n- URLs are in the job summary'],
+              skipped: ['♻️', 'nothing to do', '- Every requested API already existed. Nothing was created.'],
+            }[status] || ['❌', 'failed', '- Check the Actions log for error details.\n- A failed row may have left a half-built API. The job summary lists what exists now.'];
+
+            const [emoji, headline, detail] = outcome;
 
             const body = [
               `## API Gateway Onboarding ${emoji} — \`${file}\``,
               '',
-              `**Status:** ${status}`,
+              `**Result:** ${headline}`,
               `**Run:** [#${context.runId}](${runUrl})`,
               cr ? `**CR:** ${cr}` : '',
               '',
-              status === 'success'
-                ? '- WebSocket APIs created with $connect, $disconnect and ping routes\n- Deployed to the `production` stage\n- WebSocket URLs are in the run log and the job summary'
-                : '- Check the Actions log for error details.\n- A failed row may have left a partially built API — review the console before re-running.',
+              detail,
             ].filter(Boolean).join('\n');
-
-            core.summary.addRaw(body).write();
 
             const prs = await github.rest.repos.listPullRequestsAssociatedWithCommit({
               owner: context.repo.owner,

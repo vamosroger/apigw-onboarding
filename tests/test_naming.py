@@ -1,4 +1,10 @@
-from naming import derive_name, domain_label, environment_prefix, is_derived, pod_number
+from createapigw import (
+    derive_name,
+    domain_label,
+    environment_prefix,
+    is_derived,
+    pod_number,
+)
 
 
 def test_prod_uses_the_pdpm_prefix():

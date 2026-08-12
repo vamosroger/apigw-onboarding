@@ -1,4 +1,4 @@
-from regions import ALLOWED_REGIONS, is_allowed, normalize_region
+from createapigw import ALLOWED_REGIONS, is_allowed, normalize_region
 
 
 def test_the_expected_regions_are_allowed():

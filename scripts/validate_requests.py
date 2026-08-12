@@ -22,8 +22,16 @@ import csv
 import sys
 from pathlib import Path
 
-from naming import ENVIRONMENT_PREFIXES, derive_name, is_derived
-from regions import ALLOWED_REGIONS, is_allowed, normalize_region
+# The naming and region rules live in createapigw.py so they cannot drift
+# between the script that applies them and this one, which checks they held.
+from createapigw import (
+    ALLOWED_REGIONS,
+    ENVIRONMENT_PREFIXES,
+    derive_name,
+    is_allowed,
+    is_derived,
+    normalize_region,
+)
 
 REQUIRED_COLUMNS = ["Domain", "Region", "Environment", "Pod"]
 

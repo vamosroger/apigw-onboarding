@@ -1,6 +1,17 @@
 import csv
 
-from normalize_requests import main, normalize_domain, normalize_rows
+from createapigw import cmd_normalize, normalize_domain, normalize_rows
+
+
+class _Args:
+    """Stand-in for the parsed argparse namespace."""
+    def __init__(self, config_file):
+        self.config_file = config_file
+
+
+def main(argv):
+    # Tests call main(["--config-file", path]); route that to the subcommand.
+    return cmd_normalize(_Args(argv[argv.index("--config-file") + 1]))
 
 
 def test_https_prefix_is_stripped():

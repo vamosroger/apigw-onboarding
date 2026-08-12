@@ -1,10 +1,10 @@
 import csv
 
-from check_existing import (
+from createapigw import (
     describe,
     find_collisions,
     partition_rows,
-    report,
+    report_collisions as report,
     rows_by_region,
     write_remaining,
 )
@@ -91,7 +91,9 @@ def test_describe_survives_a_sparse_api_object():
     assert describe({}) == "ApiId=? protocol=? endpoint=?"
 
 
-def test_report_writes_the_step_summary(tmp_path, monkeypatch):
+def test_report_does_not_write_the_step_summary(tmp_path, monkeypatch):
+    # report_summary.py owns the job summary; these rows appear there as
+    # 'existing'. Writing here too would duplicate them.
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     hits = find_collisions(
@@ -99,9 +101,7 @@ def test_report_writes_the_step_summary(tmp_path, monkeypatch):
         {"us-east-1": {"pdpm1api-pim": [api()]}},
     )
     report(hits, "requests/pim_apigw_CHG1234567.csv")
-    written = summary.read_text(encoding="utf-8")
-    assert "pdpm1api-pim" in written
-    assert "abc123" in written
+    assert not summary.exists()
 
 
 def test_existing_rows_are_dropped_from_the_work_list():
