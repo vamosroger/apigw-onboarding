@@ -1,0 +1,5 @@
+Domain,Region,Environment,Pod
+jdaco.deltekpim.com,us-east-1,Production,3
+arnold.deltekpim.com,eu-west-1,Development,4
+raizo.deltekpim.com,ap-southeast-1,prod,1
+abigail.deltekpim.com,ap-southeast-2,dev,6
