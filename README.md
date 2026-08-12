@@ -36,8 +36,8 @@ tests/                  pytest suite for validate_requests
 
 Three places, all inside the run:
 
-- **The step log** — `createapigw.py` prints each URL as it creates the API, and
-  the **Show results** step prints the full list at the end.
+- **The step log** — `createapigw.py` prints each URL as it creates the API, then
+  a table of everything created at the end of the run.
 - **The job summary** — the same list as a table on the run's front page.
 - **The PR comment** — status and a link back to the run.
 

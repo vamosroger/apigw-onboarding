@@ -212,49 +212,6 @@ jobs:
           echo "All requested APIs already exist — nothing was created."
           echo "All requested APIs already exist — nothing was created." >> "$GITHUB_STEP_SUMMARY"
 
-      # Written even on a partial failure, so print regardless of the outcome above.
-      # Parsed with the csv module rather than cut/awk so a quoted field cannot
-      # shift the columns.
-      - name: Show results
-        if: always()
-        env:
-          CSV: ${{ matrix.file }}
-        run: |
-          python - <<'PY'
-          import csv, os
-          from pathlib import Path
-
-          results = Path("scripts/pim-apigw-list.csv")
-          source = os.environ["CSV"]
-
-          if not results.is_file():
-              print("No results file was produced — nothing was created.")
-              raise SystemExit(0)
-
-          with results.open(newline="", encoding="utf-8") as handle:
-              rows = list(csv.reader(handle))
-
-          header, data = rows[0], rows[1:]
-
-          print("=" * 60)
-          print(f"Created APIs from {source}")
-          print("=" * 60)
-          for row in data:
-              print(" | ".join(row))
-          print("=" * 60)
-          print(f"{len(data)} API(s) created.")
-
-          summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary and data:
-              with open(summary, "a", encoding="utf-8") as out:
-                  out.write(f"\n### Created APIs — `{source}`\n\n")
-                  out.write("| " + " | ".join(header) + " |\n")
-                  out.write("| " + " | ".join("---" for _ in header) + " |\n")
-                  for row in data:
-                      name, domain, url = (row + ["", "", ""])[:3]
-                      out.write(f"| {name} | {domain} | `{url}` |\n")
-          PY
-
       - name: Post run summary
         if: always()
         uses: actions/github-script@v7
