@@ -44,9 +44,18 @@ ROUTE_KEYS = ["$connect", "$disconnect", "ping"]
 API_STAGE = "production"
 ROUTE_SELECTION_EXPRESSION = "$request.body.type"
 
-# NOTE: the PowerShell script had this as '\$default' - the backslash was a
-# literal character, not an escape, so it sent "\$default" to AWS. Corrected here.
-TEMPLATE_SELECTION_EXPRESSION = "$default"
+# Same escaping rule as TEMPLATE_SELECTION_EXPRESSION below — this is a
+# selection expression, so the reserved key must be written "\$default".
+ROUTE_RESPONSE_SELECTION_EXPRESSION = "\\$default"
+
+# The backslash is required by API Gateway, not a leftover from PowerShell. In a
+# selection expression '$' introduces a variable, so an unescaped "$default" is
+# read as a variable named 'default' and AWS rejects it with:
+#     Unexpected variable in selection expression: $default
+# Escaping it as "\$default" means the literal reserved key. This was briefly
+# "corrected" to "$default" during the port, which broke CreateIntegration.
+# https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-websocket-api-selection-expressions.html
+TEMPLATE_SELECTION_EXPRESSION = "\\$default"
 
 INTEGRATION_RESPONSE_TEMPLATE_SELECTION = "${integration.response.statuscode}"
 
@@ -171,7 +180,7 @@ def create_routes(client, api_id, integration_ids):
         response = client.create_route(
             ApiId=api_id,
             RouteKey=route_key,
-            RouteResponseSelectionExpression="$default",
+            RouteResponseSelectionExpression=ROUTE_RESPONSE_SELECTION_EXPRESSION,
             Target=f"integrations/{integration_ids[route_key]}",
         )
         route_ids[route_key] = response["RouteId"]
